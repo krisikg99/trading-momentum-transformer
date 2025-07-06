@@ -4,7 +4,7 @@ import pathlib
 import shutil
 import copy
 
-from keras_tuner.tuners.randomsearch import RandomSearch
+from keras_tuner.tuners import RandomSearch
 from abc import ABC, abstractmethod
 
 from tensorflow import keras
@@ -95,7 +95,7 @@ class SharpeValidationLoss(keras.callbacks.Callback):
             positions * self.returns, self.time_indices, self.num_time
         )[1:]
         # ignoring null times
-
+        print(captured_returns.shape)
         # TODO sharpe
         sharpe = (
             tf.reduce_mean(captured_returns)
@@ -284,6 +284,7 @@ class DeepMomentumNetworkModel(ABC):
         data, labels, active_flags, _, _ = ModelFeatures._unpack(train_data)
         val_data, val_labels, val_flags, _, val_time = ModelFeatures._unpack(valid_data)
 
+        print(data.shape)
         if self.evaluate_diversified_val_sharpe:
             val_time_indices, num_val_time = self._index_times(val_time)
             callbacks = [
@@ -310,23 +311,27 @@ class DeepMomentumNetworkModel(ABC):
                 use_multiprocessing=True,
                 workers=self.n_multiprocessing_workers,
             )
+            best_hp = self.tuner.get_best_hyperparameters(num_trials=1)[0].values
+            best_model = self.tuner.get_best_models(num_models=1)[0]
         else:
             callbacks = [
-                tf.keras.callbacks.EarlyStopping(
-                    monitor="val_loss",
-                    patience=self.early_stopping_patience,
-                    min_delta=1e-4,
-                ),
+                # tf.keras.callbacks.EarlyStopping(
+                #     monitor="val_loss",
+                #     patience=self.early_stopping_patience,
+                #     min_delta=1e-4,
+                # ),
                 # tf.keras.callbacks.TerminateOnNaN(),
             ]
             # self.model.run_eagerly = True
-            self.tuner.search(
+            # Direct training with known parameters (no hyperparameter search)
+            hps = self.tuner.oracle.get_space().values
+            model = self.load_model(hps)
+            model.fit(
                 x=data,
                 y=labels,
                 sample_weight=active_flags,
                 epochs=self.num_epochs,
-                # batch_size=minibatch_size,
-                # covered by Tuner class
+                batch_size=64,
                 validation_data=(
                     val_data,
                     val_labels,
@@ -336,11 +341,12 @@ class DeepMomentumNetworkModel(ABC):
                 shuffle=True,
                 use_multiprocessing=True,
                 workers=self.n_multiprocessing_workers,
-                # validation_batch_size=1,
             )
+            best_hp = self.tuner.oracle.get_space().values
+            best_model = model
 
-        best_hp = self.tuner.get_best_hyperparameters(num_trials=1)[0].values
-        best_model = self.tuner.get_best_models(num_models=1)[0]
+        # best_hp = self.tuner.get_best_hyperparameters(num_trials=1)[0].values
+        # best_model = self.tuner.get_best_models(num_models=1)[0]
         return best_hp, best_model
 
     def load_model(

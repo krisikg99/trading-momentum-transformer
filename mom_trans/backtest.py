@@ -9,7 +9,7 @@ import gc
 import copy
 
 import json
-
+from mom_trans.classical_strategies import calc_performance_metrics_subset, calc_vol_scaled_returns
 from mom_trans.model_inputs import ModelFeatures
 from mom_trans.deep_momentum_network import LstmDeepMomentumNetworkModel
 from mom_trans.momentum_transformer import TftDeepMomentumNetworkModel
@@ -104,7 +104,9 @@ def _results_from_all_windows(
             for interval in train_intervals
         ]
     )
-
+    def get_full_results_path(experiment_name: str, train_interval: Tuple[int, int, int]) -> str:
+        """Get the full path for a results directory given experiment name and interval."""
+        return os.path.abspath(_get_directory_name(experiment_name, train_interval))
 
 def _get_asset_classes(asset_class_dictionary: Dict[str, str]):
     return np.unique(list(asset_class_dictionary.values())).tolist()
@@ -181,6 +183,9 @@ def save_results(
         extra_metrics (dict, optional): additional metrics to save. Defaults to {}.
     """
     asset_classes = ["ALL"]
+    # filter the results in results_sw to only include the tickers in asset_class_dictionary.keys()
+    if asset_class_dictionary:
+        results_sw = results_sw[results_sw["identifier"].isin(asset_class_dictionary.keys())]
     results_asset_class = [results_sw]
     if asset_class_dictionary:
         results_sw["asset_class"] = results_sw["identifier"].map(
@@ -596,6 +601,141 @@ def intermediate_momentum_position(w: float, returns_data: pd.DataFrame) -> pd.S
     )
 
 
+def aggregate_and_save_all_windows(
+    experiment_name: str,
+    train_intervals: List[Tuple[int, int, int]],
+    asset_class_dictionary: Dict[str, str],
+    standard_window_size: int,
+):
+    """Save a results summary, aggregating all windows
+
+    Args:
+        experiment_name (str): experiment name
+        train_intervals (List[Tuple[int, int, int]]): list of train/test intervals
+        asset_class_dictionary (Dict[str, str]): map tickers to asset class
+        standard_window_size (int): number of years in standard window
+    """
+    directory = _get_directory_name(experiment_name)
+    all_results = _results_from_all_windows(experiment_name, train_intervals)
+
+    _metrics = [
+        "annual_return",
+        "annual_volatility",
+        "sharpe_ratio",
+        "downside_risk",
+        "sortino_ratio",
+        "max_drawdown",
+        "calmar_ratio",
+        "perc_pos_return",
+        "profit_loss_ratio",
+    ]
+    _rescaled_metrics = [
+        "annual_return_rescaled",
+        "annual_volatility_rescaled",
+        "downside_risk_rescaled",
+        "max_drawdown_rescaled",
+    ]
+
+    metrics = []
+    rescaled_metrics = []
+    for bp in BACKTEST_AVERAGE_BASIS_POINTS:
+        suffix = _basis_point_suffix(bp)
+        metrics += list(map(lambda m: m + suffix, _metrics))
+        rescaled_metrics += list(map(lambda m: m + suffix, _rescaled_metrics))
+
+    if asset_class_dictionary:
+        asset_classes = ["ALL"] + _get_asset_classes(asset_class_dictionary)
+    else:
+        asset_classes = ["ALL"]
+
+    average_metrics = {}
+    list_metrics = {}
+
+    asset_class_tickers = (
+        pd.DataFrame.from_dict(asset_class_dictionary, orient="index")
+        .reset_index()
+        .set_index(0)
+    )
+
+    for asset_class in asset_classes:
+        average_results = dict(
+            zip(
+                metrics + rescaled_metrics,
+                [[] for _ in range(len(metrics + rescaled_metrics))],
+            )
+        )
+        asset_results = all_results[asset_class]
+
+        for bp in BACKTEST_AVERAGE_BASIS_POINTS:
+            suffix = _basis_point_suffix(bp)
+            average_results[f"sharpe_ratio_years{suffix}"] = []
+        # average_results["sharpe_ratio_years_std"] = 0.0
+
+        for interval in train_intervals:
+            # only want full windows here
+            if interval[2] - interval[1] == standard_window_size:
+                for m in _metrics:
+                    for bp in BACKTEST_AVERAGE_BASIS_POINTS:
+                        suffix = _interval_suffix(interval, bp)
+                        average_results[m + _basis_point_suffix(bp)].append(
+                            asset_results[m + suffix]
+                        )
+
+            for bp in BACKTEST_AVERAGE_BASIS_POINTS:
+                suffix = _basis_point_suffix(bp)
+                for year in range(interval[1], interval[2]):
+                    average_results["sharpe_ratio_years" + suffix].append(
+                        asset_results[f"sharpe_ratio_{int(year)}{suffix}"]
+                    )
+        for bp in BACKTEST_AVERAGE_BASIS_POINTS:
+            suffix = _basis_point_suffix(bp)
+            all_captured_returns = _captured_returns_from_all_windows(
+                experiment_name,
+                train_intervals,
+                volatility_rescaling=True,
+                only_standard_windows=True,
+                volatilites_known=average_results["annual_volatility" + suffix],
+                filter_identifiers=(
+                    None
+                    if asset_class == "ALL"
+                    else asset_class_tickers.loc[
+                        asset_class, asset_class_tickers.columns[0]
+                    ].tolist()
+                ),
+                captured_returns_col=f"captured_returns{suffix}",
+            )
+            yrs = pd.to_datetime(all_captured_returns.index).year
+            for interval in train_intervals:
+                if interval[2] - interval[1] == standard_window_size:
+                    srs = all_captured_returns[
+                        (yrs >= interval[1]) & (yrs < interval[2])
+                    ]
+                    rescaled_dict = calc_performance_metrics_subset(
+                        srs, f"_rescaled{suffix}"
+                    )
+                    for m in _rescaled_metrics:
+                        average_results[m + suffix].append(rescaled_dict[m + suffix])
+
+        window_history = copy.deepcopy(average_results)
+        for key in average_results:
+            average_results[key] = np.mean(average_results[key])
+
+        for bp in BACKTEST_AVERAGE_BASIS_POINTS:
+            suffix = _basis_point_suffix(bp)
+            average_results[f"sharpe_ratio_years_std{suffix}"] = np.std(
+                window_history[f"sharpe_ratio_years{suffix}"]
+            )
+
+        average_metrics = {**average_metrics, asset_class: average_results}
+        list_metrics = {**list_metrics, asset_class: window_history}
+
+    with open(os.path.join(directory, "average_results.json"), "w") as file:
+        file.write(json.dumps(average_metrics, indent=4))
+    with open(os.path.join(directory, "list_results.json"), "w") as file:
+        file.write(json.dumps(list_metrics, indent=4))
+
+
+from mom_trans.classical_strategies import annual_volatility
 def run_classical_methods(
     features_file_path,
     train_intervals,
@@ -612,6 +752,34 @@ def run_classical_methods(
         long_only_experiment_name (str, optional): name of long only experiment. Defaults to "long_only".
         tsmom_experiment_name (str, optional): name of TSMOM experiment. Defaults to "tsmom".
     """
+    def read_results_json_to_dataframe_and_save_mean(directory):
+        data = []
+        for root, _, files in os.walk(directory):
+            for file in files:
+                if file == "results.json":
+                    file_path = os.path.join(root, file)
+                    with open(file_path, 'r') as f:
+                        try:
+                            json_data = json.load(f)
+                            all_dict = json_data["ALL"]
+                            data.append(all_dict)
+                        except json.JSONDecodeError:
+                            print(f"Error decoding JSON in file: {file_path}")
+        df = pd.DataFrame(data)
+        if not df.empty:
+            mean_dict = df.mean(numeric_only=True).to_dict()
+            mean_dict = {"ALL": mean_dict}
+            mean_path = os.path.join(directory, "average_results.json")
+            with open(mean_path, "w") as f:
+                json.dump(mean_dict, f, indent=4)
+
+            # Save per-column lists as a dict of lists
+            list_dict = {col: df[col].dropna().tolist() for col in df.columns}
+            list_dict = {"ALL": list_dict}
+            list_path = os.path.join(directory, "list_results.json")
+            with open(list_path, "w") as f:
+                json.dump(list_dict, f, indent=4)
+
     directory = _get_directory_name(long_only_experiment_name)
     if not os.path.exists(directory):
         os.mkdir(directory)
@@ -643,6 +811,21 @@ def run_classical_methods(
             ["identifier", "time", "returns", "position", "captured_returns"]
         ]
         returns_data.to_csv(f"{directory}/captured_returns_sw.csv")
+        tsmom_metrics = calc_performance_metrics(
+            returns_data.set_index("time"), "", None
+        )
+        volatilites = annual_volatility(
+            returns_data.set_index("time")["captured_returns"]
+        )
+        tsmom_metrics_rescaled = calc_performance_metrics_subset(
+            # calc_vol_scaled_returns(
+                returns_data.set_index("time")["captured_returns"]* VOL_TARGET / np.mean(volatilites),
+            # ),
+            "_rescaled",
+        )
+        tsmom_metrics.update(tsmom_metrics_rescaled)
+        with open(os.path.join(directory, "results.json"), "w") as file:
+            file.write(json.dumps({"ALL": tsmom_metrics}, indent=4))
 
         directory = _get_directory_name(long_only_experiment_name, train_interval)
         if not os.path.exists(directory):
@@ -652,3 +835,25 @@ def run_classical_methods(
             returns_data["position"] * returns_data["returns"]
         )
         returns_data.to_csv(f"{directory}/captured_returns_sw.csv")
+        long_only_metrics = calc_performance_metrics(
+            returns_data.set_index("time"), "", None
+        )
+        volatilites = annual_volatility(
+            returns_data.set_index("time")["captured_returns"]
+        )
+        long_only_metrics_rescaled = calc_performance_metrics_subset(
+            # calc_vol_scaled_returns(
+                returns_data.set_index("time")["captured_returns"]* VOL_TARGET / np.mean(volatilites),
+            # ),
+            "_rescaled"
+        )
+        long_only_metrics.update(long_only_metrics_rescaled)
+
+        with open(os.path.join(directory, "results.json"), "w") as file:
+            file.write(json.dumps({"ALL": long_only_metrics}, indent=4))
+    read_results_json_to_dataframe_and_save_mean(
+        _get_directory_name(tsmom_experiment_name)
+        )
+    read_results_json_to_dataframe_and_save_mean(
+        _get_directory_name(long_only_experiment_name)
+        )

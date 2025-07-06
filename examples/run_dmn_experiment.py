@@ -11,11 +11,11 @@ from functools import reduce
 # define the asset class of each ticker here - for this example we have not done this
 TEST_MODE = False
 ASSET_CLASS_MAPPING = dict(zip(QUANDL_TICKERS, ["COMB"] * len(QUANDL_TICKERS)))
-TRAIN_VALID_RATIO = 0.90
-TIME_FEATURES = False
+TRAIN_VALID_RATIO = 0.8
+TIME_FEATURES = True
 FORCE_OUTPUT_SHARPE_LENGTH = None
 EVALUATE_DIVERSIFIED_VAL_SHARPE = True
-NAME = "experiment_quandl_100assets"
+NAME = "experiment_quandl_08val"
 
 
 def main(
@@ -34,6 +34,14 @@ def main(
         architecture = "LSTM"
         lstm_time_steps = 63
         changepoint_lbws = [21]
+    elif experiment == "LSTM-BOCD-21":
+        architecture = "LSTM"
+        lstm_time_steps = 63
+        changepoint_lbws = ["bocd_21"]
+    elif experiment == "LSTM-NEWMA-21":
+        architecture = "LSTM"
+        lstm_time_steps = 63
+        changepoint_lbws = ["newma_21"]
     elif experiment == "LSTM-CPD-63":
         architecture = "LSTM"
         lstm_time_steps = 63
@@ -81,7 +89,7 @@ def main(
     _project_name += "_v"
     for v in versions:
         PROJECT_NAME = _project_name + str(v)
-
+        print(test_start, test_window_size)
         intervals = [
             (train_start, y, y + test_window_size)
             for y in range(test_start, test_end - 1)
@@ -100,10 +108,17 @@ def main(
             params["random_search_iterations"] = 2
 
         if changepoint_lbws:
-            features_file_path = os.path.join(
-                "data",
-                f"quandl_cpd_{np.max(changepoint_lbws)}lbw.csv",
-            )
+            if isinstance(changepoint_lbws[0], str):
+                assert len(changepoint_lbws) == 1, "Only one changepoint LBW allowed for BOCD."
+                features_file_path = os.path.join(
+                    "data",
+                    f"quandl_cpd_{changepoint_lbws[0]}lbw.csv",
+                )
+            else:
+                features_file_path = os.path.join(
+                    "data",
+                    f"quandl_cpd_{np.max(changepoint_lbws)}lbw.csv",
+                )
         else:
             features_file_path = os.path.join(
                 "data",
@@ -137,6 +152,8 @@ if __name__ == "__main__":
             choices=[
                 "LSTM",
                 "LSTM-CPD-21",
+                "LSTM-BOCD-21",
+                "LSTM-NEWMA-21",
                 "LSTM-CPD-63",
                 "TFT",
                 "TFT-CPD-126-21",
@@ -183,7 +200,7 @@ if __name__ == "__main__":
             metavar="r",
             type=int,
             nargs="?",
-            default=1,
+            default=2,
             help="Number of experiment repeats.",
         )
 

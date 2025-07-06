@@ -9,7 +9,7 @@ from settings.default import (
     CPD_DEFAULT_LBW,
 )
 
-N_WORKERS = 32 # len(QUANDL_TICKERS)
+N_WORKERS = 15 # len(QUANDL_TICKERS)
 
 def create_date_range_processes(n, tickers, lookback_window_length):
     # Convert date strings to datetime objects
@@ -48,15 +48,15 @@ def main(lookback_window_length: int):
     if not os.path.exists(CPD_QUANDL_OUTPUT_FOLDER(lookback_window_length)):
         os.mkdir(CPD_QUANDL_OUTPUT_FOLDER(lookback_window_length))
 
-    # all_processes = [
-    #     f'python -m examples.cpd_quandl "{ticker}" "{os.path.join(CPD_QUANDL_OUTPUT_FOLDER(lookback_window_length), ticker + ".csv")}" "1990-01-01" "2021-12-31" "{lookback_window_length}"'
-    #     for ticker in QUANDL_TICKERS
-    # ]
-    all_processes = create_date_range_processes(
-        n=2, # n_tickers 8 x n = 10 for 60 gb
-        tickers=QUANDL_TICKERS,
-        lookback_window_length=lookback_window_length
-    )
+    all_processes = [
+        f'python -m examples.cpd_quandl "{ticker}" "{os.path.join(CPD_QUANDL_OUTPUT_FOLDER(lookback_window_length), ticker + ".csv")}" "1990-01-01" "2021-12-31" "{lookback_window_length}"'
+        for ticker in QUANDL_TICKERS
+    ]
+    # all_processes = create_date_range_processes(
+    #     n=5, # n_tickers 8 x n = 10 for 60 gb
+    #     tickers=QUANDL_TICKERS,
+    #     lookback_window_length=lookback_window_length
+    # )
     
     # print(all_processes[0])
     process_pool = multiprocessing.Pool(processes=N_WORKERS)

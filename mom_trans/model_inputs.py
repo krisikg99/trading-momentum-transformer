@@ -114,13 +114,42 @@ class ModelFeatures:
         self.lags = lags
 
         if changepoint_lbws:
-            for lbw in changepoint_lbws:
-                self._column_definition.append(
-                    (f"cp_score_{lbw}", DataTypes.REAL_VALUED, InputTypes.KNOWN_INPUT)
-                )
-                self._column_definition.append(
-                    (f"cp_rl_{lbw}", DataTypes.REAL_VALUED, InputTypes.KNOWN_INPUT)
-                )
+            if isinstance(changepoint_lbws[0], int):
+                for lbw in changepoint_lbws:
+                    self._column_definition.append(
+                        (f"cp_score_{lbw}", DataTypes.REAL_VALUED, InputTypes.KNOWN_INPUT)
+                    )
+                    self._column_definition.append(
+                        (f"cp_rl_{lbw}", DataTypes.REAL_VALUED, InputTypes.KNOWN_INPUT)
+                    )
+            elif isinstance(changepoint_lbws[0], str):
+                if "bocd" in changepoint_lbws[0]:
+                    self._column_definition.append(
+                        ("R_standard_5", DataTypes.REAL_VALUED, InputTypes.KNOWN_INPUT)
+                    )
+                    self._column_definition.append(
+                        ("R_standard_21", DataTypes.REAL_VALUED, InputTypes.KNOWN_INPUT)
+                    )
+                    self._column_definition.append(
+                        ("R_standard_cps", DataTypes.REAL_VALUED, InputTypes.KNOWN_INPUT)
+                    )
+                elif "newma" in changepoint_lbws[0]:
+                    self._column_definition.append(
+                        ("detection_stat", DataTypes.REAL_VALUED, InputTypes.KNOWN_INPUT)
+                    )
+                    self._column_definition.append(
+                        ("online_th", DataTypes.REAL_VALUED, InputTypes.KNOWN_INPUT)
+                    )
+                    self._column_definition.append(
+                        ("online_cp", DataTypes.REAL_VALUED, InputTypes.KNOWN_INPUT)
+                    )
+                else:
+                    raise ValueError(
+                        "Unsupported changepoint detection method: {}".format(
+                            changepoint_lbws[0]
+                        )
+                    )
+                
 
         if time_features:
             self._column_definition.append(
@@ -578,7 +607,7 @@ class ModelFeatures:
                 active_entries = np.ones((arr.shape[0], arr.shape[1], arr.shape[2]))
                 for i in range(batch_size):
                     active_entries[i, sequence_lengths[i] :, :] = 0
-                sequence_lengths = np.array(sequence_lengths, dtype=np.int)
+                sequence_lengths = np.array(sequence_lengths, dtype=int)
 
                 if "active_entries" not in data_map:
                     data_map["active_entries"] = [

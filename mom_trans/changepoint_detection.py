@@ -2,6 +2,11 @@ import csv
 import datetime as dt
 from typing import Dict, List, Optional, Tuple, Union
 
+import tracemalloc
+import gc
+import os 
+# os.environ['CUDA_VISIBLE_DEVICES'] = '0'
+
 import gpflow
 import numpy as np
 import pandas as pd
@@ -10,9 +15,22 @@ from gpflow.kernels import ChangePoints, Matern32
 from sklearn.preprocessing import StandardScaler
 from tensorflow_probability import bijectors as tfb
 
-Kernel = gpflow.kernels.base.Kernel
 
-MAX_ITERATIONS = 200
+# log_dev_conf = tf.config.LogicalDeviceConfiguration(
+#     memory_limit=0.5*1024 # 2 GB
+# )
+# cpus = tf.config.list_physical_devices('GPU')
+# tf.config.set_logical_device_configuration(
+#     cpus[0],
+#     [log_dev_conf])
+
+Kernel = gpflow.kernels.base.Kernel
+# tf.compat.v1.disable_eager_execution()
+# tf.config.run_functions_eagerly(True)
+
+MAX_ITERATIONS = 100
+
+import psutil
 
 
 class ChangePointsWithBounds(ChangePoints):
@@ -99,6 +117,11 @@ def fit_matern_kernel(
         "kM_lengthscales": m.kernel.lengthscales.numpy(),
         "kM_likelihood_variance": m.likelihood.variance.numpy(),
     }
+    # del m, opt
+    # tf.keras.backend.clear_session(
+    #     free_memory=True
+    # )
+    # gc.collect() 
     return nlml, params
 
 
@@ -162,6 +185,11 @@ def fit_changepoint_kernel(
         "kC_changepoint_location": changepoint_location,
         "kC_steepness": m.kernel.steepness.numpy(),
     }
+    # del m, opt
+    # tf.keras.backend.clear_session(
+    #     free_memory=True
+    # )
+    # gc.collect()
     return changepoint_location, nlml, params
 
 
@@ -347,13 +375,26 @@ def run_module(
         time_series_data = pd.concat([first_window, remaining_data]).copy()
 
     csv_fields = ["date", "t", "cp_location", "cp_location_norm", "cp_score"]
-    with open(output_csv_file_path, "w") as f:
-        writer = csv.writer(f)
-        writer.writerow(csv_fields)
+    if not os.path.exists(output_csv_file_path):
+        with open(output_csv_file_path, "w") as f:
+            writer = csv.writer(f)
+            writer.writerow(csv_fields)
+    else:
+        df = pd.read_csv(output_csv_file_path)
+        if not all([col in df.columns for col in csv_fields]):
+            with open(output_csv_file_path, "w") as f:
+                writer = csv.writer(f)
+                writer.writerow(csv_fields)
+    df = pd.read_csv(output_csv_file_path)
+    
+            
+        
 
     time_series_data["date"] = time_series_data.index
     time_series_data = time_series_data.reset_index(drop=True)
+    # tracemalloc.start()
     for window_end in range(lookback_window_length + 1, len(time_series_data)):
+        # snapshot1 = tracemalloc.take_snapshot()
         ts_data_window = time_series_data.iloc[
             window_end - (lookback_window_length + 1) : window_end
         ][["date", "daily_returns"]].copy()
@@ -361,29 +402,44 @@ def run_module(
         ts_data_window = ts_data_window.rename(columns={"daily_returns": "Y"})
         time_index = window_end - 1
         window_date = ts_data_window["date"].iloc[-1].strftime("%Y-%m-%d")
+        if not window_date in df['date'].values:
+            try:
+                if use_kM_hyp_to_initialise_kC:
+                    cp_score, cp_loc, cp_loc_normalised, _, _ = changepoint_loc_and_score(
+                        ts_data_window,
+                    )
+                else:
+                    cp_score, cp_loc, cp_loc_normalised, _, _ = changepoint_loc_and_score(
+                        ts_data_window,
+                        k1_lengthscale=1.0,
+                        k1_variance=1.0,
+                        k2_lengthscale=1.0,
+                        k2_variance=1.0,
+                        kC_likelihood_variance=1.0,
+                    )
+                    
 
-        try:
-            if use_kM_hyp_to_initialise_kC:
-                cp_score, cp_loc, cp_loc_normalised, _, _ = changepoint_loc_and_score(
-                    ts_data_window,
+            except:
+                # write as NA when fails and will deal with this later
+                cp_score, cp_loc, cp_loc_normalised = "NA", "NA", "NA"
+
+            # #write the reults to the csv
+            with open(output_csv_file_path, "a") as f:
+                writer = csv.writer(f)
+                writer.writerow(
+                    [window_date, time_index, cp_loc, cp_loc_normalised, cp_score]
                 )
-            else:
-                cp_score, cp_loc, cp_loc_normalised, _, _ = changepoint_loc_and_score(
-                    ts_data_window,
-                    k1_lengthscale=1.0,
-                    k1_variance=1.0,
-                    k2_lengthscale=1.0,
-                    k2_variance=1.0,
-                    kC_likelihood_variance=1.0,
-                )
-
-        except:
-            # write as NA when fails and will deal with this later
-            cp_score, cp_loc, cp_loc_normalised = "NA", "NA", "NA"
-
-        # #write the reults to the csv
-        with open(output_csv_file_path, "a") as f:
-            writer = csv.writer(f)
-            writer.writerow(
-                [window_date, time_index, cp_loc, cp_loc_normalised, cp_score]
-            )
+            
+            # del cp_score, cp_loc, cp_loc_normalised, _
+            # tf.keras.backend.clear_session(
+            #     free_memory=True
+            # )
+            # gc.collect()
+                
+        # snapshot2 = tracemalloc.take_snapshot()
+        # top_stats = snapshot2.compare_to(snapshot1, 'filename', True)
+        # for stat in top_stats[:10]:  # Show top 10 memory-consuming lines
+        #     print(stat)
+        # print("===")
+        # memory = psutil.virtual_memory().available / (1024.0 ** 3)
+        # print(memory)
